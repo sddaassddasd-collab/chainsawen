@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chainsaw Game｜Hold to Start Sawing</title>
+<style>
+  :root{ --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; }
+  html,body{
+    height:100%;margin:0;
+    background:var(--bg) url('background.jpg') center/cover no-repeat fixed;
+    color:var(--fg);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+  }
+  .wrap{display:grid;place-items:center;min-height:100vh;position:relative;}
+  .card{position:relative;z-index:1;width:min(900px,95vw);background:#0f172a;border-radius:16px;padding:20px;border:2px solid rgba(255,255,255,.2);box-shadow:0 4px 16px rgba(0,0,0,.4)}
+
+  .bar{height:30px;background:rgba(255,255,255,.1);border-radius:12px;position:relative;overflow:hidden;margin-top:10px}
+  .fill{position:absolute;inset:0 100% 0 0;transition:width .08s linear;background:#fff}
+  .fill.white{background:linear-gradient(90deg,#fff,#ddd)}
+  .fill.green{background:linear-gradient(90deg,#34d399,#22c55e)}
+  .fill.red{background:linear-gradient(90deg,#f87171,#ef4444)}
+  .mark{position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.6)}
+  .mark-label{position:absolute;top:-20px;transform:translateX(-50%);font-size:.8rem;color:var(--muted)}
+  .green-zone{position:absolute;top:0;bottom:0;background:rgba(34,197,94,.25);border-radius:12px;pointer-events:none;transition:clip-path .1s linear;}
+
+  .state{min-height:40px;display:grid;place-items:center;font-weight:700;margin-top:12px}
+  .btn{padding:1rem 1.4rem;border:0;border-radius:12px;background:#22c55e;color:#0b1220;font-weight:700;cursor:pointer}
+  .pill{font-size:.9rem;color:var(--muted)}
+
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;place-items:center;z-index:10}
+  .modal{background:#0b1220;color:#e2e8f0;border-radius:18px;padding:24px;width:min(500px,92vw)}
+
+  #chainsawSprite{position:absolute;z-index:0;pointer-events:none;top:50%;left:50%;
+    transform:translate(-50%,-50%) rotate(90deg);width:min(80vw,900px);max-width:900px;opacity:0.95;filter:drop-shadow(0 8px 20px rgba(0,0,0,.45));}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <img id="chainsawSprite" src="chainsaw1.png" alt="chainsaw" />
+
+    <div class="card">
+      <div class="bar" aria-label="Lever">
+        <div class="green-zone" id="greenZone"></div>
+        <div id="fill" class="fill"></div>
+        <div id="mark4" class="mark" style="left:40%"></div>
+        <div id="label4" class="mark-label" style="left:40%">4</div>
+        <div id="mark7" class="mark" style="left:70%"></div>
+        <div id="label7" class="mark-label" style="left:70%">7</div>
+      </div>
+
+      <div class="state" id="stateMsg">　</div>
+      <div class="pill" id="okTime">Tree sawing progress｜鋸樹進度：0.0 / 10.0 sec</div>
+      <div class="pill" id="badTime">Blood loss｜失血：0.0 / 3.0 sec</div>
+      <button id="holdBtn" class="btn" style="margin-top:15px">Hold to Start Sawing｜按住開始鋸樹</button>
+      <button id="resetBtn" class="btn" style="margin-top:10px;background:#64748b;color:#fff">Restart｜重新開始</button>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h2 id="resultTitle">Result｜結果</h2>
+      <p id="resultDesc"></p>
+      <button id="againBtn" class="btn"></button>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const RATE = 10/2;
+  const MIN = 0, MAX = 10;
+  const W_MIN = 0, W_MAX_L = 0, W_MAX_R = 5;
+  const G_MIN_L = 1, G_MIN_R = 6, G_MAX_L = 4, G_MAX_R = 9;
+  const R_MIN_L = 4, R_MIN_R = 9;
+  const NEED_OK = 10.0, LIMIT_BAD = 3.0;
+  const CROSS_TIME = 3.0;
+  const BASE_SPEED = 1 / CROSS_TIME;
+  const MIN_HOP = 0.15;
+  const REACH_EPS = 0.02;
+
+  const fill=document.getElementById('fill');
+  const stateMsg=document.getElementById('stateMsg');
+  const okTimeEl=document.getElementById('okTime');
+  const badTimeEl=document.getElementById('badTime');
+  const holdBtn=document.getElementById('holdBtn');
+  const resetBtn=document.getElementById('resetBtn');
+  const overlay=document.getElementById('overlay');
+  const resultTitle=document.getElementById('resultTitle');
+  const resultDesc=document.getElementById('resultDesc');
+  const againBtn=document.getElementById('againBtn');
+  const greenZone=document.getElementById('greenZone');
+  const m4=document.getElementById('mark4');
+  const m7=document.getElementById('mark7');
+  const l4=document.getElementById('label4');
+  const l7=document.getElementById('label7');
+  const sprite=document.getElementById('chainsawSprite');
+
+  let value=0,isHolding=false,okAccum=0,badAccum=0,ended=false,last=performance.now();
+  let vibT=0;
+
+  const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+  const lerp=(a,b,t)=>a+(b-a)*t;
+
+  function pickTarget(){let t;for(let i=0;i<8;i++){t=Math.random();if(Math.abs(t-pos)>=MIN_HOP)break;}target=t;segSpeed=BASE_SPEED*(0.8+Math.random()*0.6);} 
+  function stepDrift(dt){const dir=Math.sign(target-pos);pos+=dir*segSpeed*dt;pos+=(Math.random()-0.5)*0.02*dt;if(pos<0){pos=0;pickTarget();}if(pos>1){pos=1;pickTarget();}if(Math.abs(target-pos)<REACH_EPS)pickTarget();}
+  let pos=Math.random(),target=Math.random(),segSpeed=BASE_SPEED*(0.8+Math.random()*0.6);
+
+  function getZones(){const whiteMax=lerp(W_MAX_L,W_MAX_R,pos),greenMin=lerp(G_MIN_L,G_MIN_R,pos),greenMax=lerp(G_MAX_L,G_MAX_R,pos),redMin=lerp(R_MIN_L,R_MIN_R,pos);return{whiteMax,greenMin,greenMax,redMin};}
+  function setBarColor(v,z){let cls='fill';if(v>=z.redMin&&v<=MAX)cls+=' red';else if(v>z.greenMin&&v<z.greenMax)cls+=' green';else if(v>=W_MIN&&v<=z.whiteMax)cls+=' white';fill.className=cls;}
+  function setStateText(v,z){
+    if(v>=z.redMin&&v<=MAX)
+      stateMsg.textContent='Too much force! You’re bleeding!｜太大力，流晒血！';
+    else if(v>z.greenMin&&v<z.greenMax)
+      stateMsg.textContent='Perfect!｜好正呀！';
+    else if(v>=W_MIN&&v<=z.whiteMax)
+      stateMsg.textContent='Too weak! Give it more power!｜太細力，加油呀！';
+    else stateMsg.textContent='　';
+  }
+
+  function updateUI(){
+    const z=getZones();
+    fill.style.width=`${(value/MAX)*100}%`;
+    setBarColor(value,z);
+    setStateText(value,z);
+    const pos4=(z.greenMin/MAX)*100,pos7=(z.greenMax/MAX)*100;
+    if(m4&&l4){m4.style.left=`${pos4}%`;l4.style.left=`${pos4}%`;}
+    if(m7&&l7){m7.style.left=`${pos7}%`;l7.style.left=`${pos7}%`;}
+    if(greenZone){
+      const left=(z.greenMin/MAX)*100,right=(100-(z.greenMax/MAX)*100);
+      greenZone.style.clipPath=`inset(0 ${right}% 0 ${left}%)`;
+    }
+    okTimeEl.textContent=`Tree sawing progress｜鋸樹進度：${okAccum.toFixed(1)} / ${NEED_OK.toFixed(1)} sec`;
+    badTimeEl.textContent=`Blood loss｜失血：${badAccum.toFixed(1)} / ${LIMIT_BAD.toFixed(1)} sec`;
+  }
+
+  function updateSprite(dt){
+    if(!sprite)return;
+    if(isHolding){
+      vibT+=dt*120;
+      const x=Math.sin(vibT)*10;
+      sprite.style.transform=`translate(calc(-50% + ${x}px), -50%) rotate(90deg)`;
+    }else{
+      vibT=0;
+      sprite.style.transform='translate(-50%,-50%) rotate(90deg)';
+    }
+  }
+
+  function showResult(win){
+    ended=true;
+    overlay.style.display='grid';
+    if(win){
+      resultTitle.textContent='✅ Tree successfully cut down!｜成功鋸倒大樹！';
+      resultDesc.textContent='Sweep up the leaves!｜記得掃乾淨啲樹葉呀！';
+      // 成功：維持掃葉子按鈕並跳轉
+      againBtn.textContent='🧹';
+      againBtn.onclick=()=>{ window.location.href='https://sddaassddasd-collab.github.io/leaves/'; };
+    } else {
+      resultTitle.textContent='💥 Failed (too much bleeding)｜失敗（流血過多）';
+      resultDesc.textContent=`You stayed in the red zone for ${badAccum.toFixed(1)} sec (> 3 sec).｜你喺紅色區域停咗 ${badAccum.toFixed(1)} 秒（超過 3 秒）。`;
+      // 失敗：改為重新開始並重置遊戲
+      againBtn.textContent='Restart｜重新開始';
+      againBtn.onclick=()=>{ reset(); };
+    }
+  }
+
+  function reset(){
+    value=0;isHolding=false;okAccum=0;badAccum=0;ended=false;pos=Math.random();pickTarget();overlay.style.display='none';updateUI();
+  }
+
+  function tick(now){
+    const dt=Math.min(0.05,(now-last)/1000);
+    last=now;
+    if(!ended){
+      stepDrift(dt);
+      if(isHolding)value=clamp(value+RATE*dt,MIN,MAX);
+      else value=clamp(value-RATE*dt,MIN,MAX);
+      const z=getZones();
+      if(value>z.greenMin&&value<z.greenMax)okAccum+=dt;
+      if(value>=z.redMin&&value<=MAX)badAccum+=dt;
+      if(okAccum>=NEED_OK)showResult(true);
+      else if(badAccum>LIMIT_BAD)showResult(false);
+      updateUI();
+      updateSprite(dt);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  const press=()=>{if(!ended)isHolding=true;};
+  const release=()=>{if(!ended)isHolding=false;};
+  holdBtn.addEventListener('mousedown',press);
+  window.addEventListener('mouseup',release);
+  holdBtn.addEventListener('touchstart',e=>{e.preventDefault();press();},{passive:false});
+  window.addEventListener('touchend',e=>{e.preventDefault();release();},{passive:false});
+  window.addEventListener('touchcancel',e=>{e.preventDefault();release();},{passive:false});
+  window.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();press();}});
+  window.addEventListener('keyup',e=>{if(e.code==='Space'){e.preventDefault();release();}});
+  resetBtn.addEventListener('click',reset);
+
+  pickTarget();
+  updateUI();
+})();
+</script>
+</body>
+</html>
